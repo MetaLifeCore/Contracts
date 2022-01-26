@@ -1037,6 +1037,7 @@ pragma experimental ABIEncoderV2;
 
 contract AXM is ERC20, Ownable {
     uint256 private constant preMineSupply = 700000000 * 1e18;
+    uint256 private constant minSupply = 50000000 * 1e18;
     // uint256 private constant maxSupply = 1000000000 * 1e18;     // the total supply
 
     using EnumerableSet for EnumerableSet.AddressSet;
@@ -1046,6 +1047,13 @@ contract AXM is ERC20, Ownable {
     EnumerableSet.AddressSet private _blacklist;
     // white list
     EnumerableSet.AddressSet private _whitelist;
+    // Pair address, in this enumerable we will draw transaction fee
+    EnumerableSet.AddressSet private _pairlist;
+    // the addtess to receive the fee
+    address private _reward;
+    // fee rate 10000 = 100%
+    uint256 private fee_rate = 500;
+    bool private is_fee = true;
 
     // transfer status
     // 0 allow all user transfer without black list
@@ -1053,11 +1061,11 @@ contract AXM is ERC20, Ownable {
     // 2 only white list can transfer
     uint256 private _transfer_status;
 
-
     constructor() public ERC20("AMM eXplorer Metalife", "AXM"){
         _transfer_status = 0;
         EnumerableSet.add(_minters, msg.sender);
         EnumerableSet.add(_whitelist, msg.sender);
+        _reward = msg.sender;
         _mint(msg.sender, preMineSupply);
     }
 
@@ -1067,6 +1075,7 @@ contract AXM is ERC20, Ownable {
         //     return false;
         // }
         // require(_amount.add(totalSupply()) <= maxSupply, "AXM: mint amount over max allow");
+        is_fee = true;
         _mint(_to, _amount);
         return true;
     }
@@ -1103,10 +1112,6 @@ contract AXM is ERC20, Ownable {
 
     // burn with mine supply
     function burn(address _to, uint256 _amount) public onlyMinter returns (bool) {
-        uint256 total_supply = totalSupply();
-        if (total_supply.sub(_amount) < preMineSupply) {
-            return false;
-        }
         _burn(_to, _amount);
         return true;
     }
@@ -1173,6 +1178,17 @@ contract AXM is ERC20, Ownable {
         _transfer_status = _status;
     }
 
+    // burn
+    function _burn(address account, uint256 amount) internal override virtual {
+        uint256 total_supply = totalSupply();
+        if (total_supply.sub(amount) < minSupply) {
+            is_fee = false;
+        }
+        else {
+            super._burn(account, amount);
+        }
+    }
+
     // transfer
     function _transfer(address sender, address recipient, uint256 amount) internal override virtual {
         require(_transfer_status != 1, "AXM: All transactions have been prohibited");
@@ -1181,6 +1197,16 @@ contract AXM is ERC20, Ownable {
         if (_transfer_status == 2) {
             require(isWhite(sender), "AXM: Only allow whitelist to initiate transactions ");
         }
+        if (isPair(sender) || isPair(recipient)) {
+            uint256 fee = amount.div(10000).mul(fee_rate);
+            uint256 fee_burn = fee.div(5).mul(2);
+            _burn(sender, fee_burn);
+            if (is_fee) {
+                uint256 reward_fee = fee.sub(fee_burn);
+                super._transfer(sender, _reward, reward_fee);
+                amount = amount.sub(fee);
+            }
+        }
         super._transfer(sender, recipient, amount);
     }
 
@@ -1188,6 +1214,39 @@ contract AXM is ERC20, Ownable {
         require(isBlack(owner) == false, "AXM: blacklist have been prohibited");
         require(isBlack(spender) == false, "AXM: blacklist have been prohibited");
         super._approve(owner, spender, amount);
+    }
+
+    // pair list
+    function addPair(address _addPair) public onlyMinter returns (bool) {
+        require(_addPair != address(0), "AXM: _addPair is the zero address");
+        if (isBlack(_addPair)) {
+            delBlack(_addPair);
+        }
+        return EnumerableSet.add(_pairlist, _addPair);
+    }
+
+    function delPair(address _delPair) public onlyMinter returns (bool) {
+        require(_delPair != owner(), "AXM: _delPair is the owner address");
+        return EnumerableSet.remove(_pairlist, _delPair);
+    }
+
+    function getPairLength() public view returns (uint256) {
+        return EnumerableSet.length(_pairlist);
+    }
+
+    function isPair(address account) public view returns (bool) {
+        return EnumerableSet.contains(_pairlist, account);
+    }
+
+    function getPair(uint256 _index) public view onlyMinter returns (address){
+        require(_index <= getPairLength() - 1, "AXM: index out of bounds");
+        return EnumerableSet.at(_pairlist, _index);
+    }
+
+    function setReward(address account) public onlyMinter returns (bool) {
+        require(isBlack(account) == false, "AXM: blacklist have been prohibited");
+        _reward = account;
+        return true;
     }
 
     function transferToken(address _token, address recipient, uint256 amount) public onlyOwner {
